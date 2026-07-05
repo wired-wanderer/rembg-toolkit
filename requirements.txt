@@ -1,0 +1,5 @@
+numba
+rembg[gpu]
+onnxruntime-gpu
+PyQt6
+Pillow
