@@ -136,6 +136,9 @@ deactivate
 
 * **PyQt6**: GNU General Public License v3.0 (GPLv3)
 * **rembg / onnxruntime-gpu / Pillow**: MIT License / HPND License
+* **numpy**: BSD 3-Clause License
+* **pymatting**: MIT License (マットインペイント機能・rembgのアルファマッティング機能で使用)
+* **huggingface_hub**: Apache License 2.0 (アップスケールモデルの自動ダウンロードで使用)
 * **numba**: BSD 2-Clause License
 
 ### ⚠️ モデル利用時の注意点 (Notice for Model Licenses)
