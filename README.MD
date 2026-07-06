@@ -139,4 +139,7 @@ deactivate
 * **numba**: BSD 2-Clause License
 
 ### ⚠️ モデル利用時の注意点 (Notice for Model Licenses)
-本ツールで利用できるAIモデルの多くはMIT/Apacheライセンスですが、一部のモデル（`bria-rmbg` や `sam` など）には非商用限定（Non-Commercial）のライセンスが適用されています。商用環境での利用や、業務利用の際は選択するモデルのライセンスにご注意ください。
+本ツールで利用できるAIモデルの多くはMIT/Apacheライセンスですが、一部のモデルには非商用限定（Non-Commercial）のライセンスが適用されています。商用環境での利用や、業務利用の際は選択するモデルのライセンスにご注意ください。
+
+現時点で非商用限定のモデル:
+- `bria-rmbg`（背景除去） — [BRIA AI 独自ライセンス](https://huggingface.co/briaai/RMBG-1.4)。商用利用にはBRIA社との別途契約が必要です。

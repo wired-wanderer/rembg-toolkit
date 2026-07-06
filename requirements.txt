@@ -1,9 +1,5 @@
-numba==0.66.0
-numpy==2.4.6
-onnxruntime-gpu==1.27.0
-pillow==12.3.0
-pymatting==1.1.15
-pyqt6==6.11.0
-pyqt6-qt6==6.11.1
-pyqt6-sip==13.11.1
-rembg==2.0.76
+numba
+rembg[gpu]
+onnxruntime-gpu
+PyQt6
+Pillow
