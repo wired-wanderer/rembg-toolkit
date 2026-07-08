@@ -1,22 +1,29 @@
 import sys
 import os
 import io
+import math
 import json
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QListWidget, QPushButton, QFileDialog, QGroupBox, QFormLayout, 
-    QSpinBox, QCheckBox, QLabel, QProgressBar, QMessageBox, QComboBox, QLineEdit,
-    QTextEdit, QTabWidget, QSplitter
+    QSpinBox, QDoubleSpinBox, QCheckBox, QLabel, QProgressBar, QMessageBox, QComboBox, QLineEdit,
+    QTextEdit, QTabWidget, QSlider, QRadioButton, QButtonGroup
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor
 from rembg import remove, new_session
 from rembg.sessions.base import BaseSession
 from PIL import Image, ImageFilter
 import numpy as np
 import shutil
 from scipy import ndimage
+
+try:
+    from pymatting import estimate_alpha_cf, estimate_foreground_ml
+    PYMATTING_AVAILABLE = True
+except Exception:
+    PYMATTING_AVAILABLE = False
 
 
 # --- リサンプリング方式の対応表 ---
@@ -133,6 +140,46 @@ TRANSLATIONS = {
     "log_cancel_requested": {"ja": "⏸ キャンセル要求を送信しました。現在のファイルの処理完了後に停止します。", "en": "⏸ Cancellation requested. Processing will stop after the current file finishes."},
     "log_batch_warning": {"ja": "⚠ バッチ推論を有効にすると、rembgのアルファマッティング後処理は適用されません。", "en": "⚠ When batched inference is enabled, rembg's alpha-matting post-processing will not be applied."},
     "onnx_list_empty": {"ja": "(onnx/ にファイルがありません)", "en": "(no files in onnx/)"},
+
+    # --- アップスケールタブ ---
+    "upscale_model_group": {"ja": "モデル選択 (標準/Real-ESRGAN系)", "en": "Model Selection (Standard / Real-ESRGAN family)"},
+    "upscale_standard_label": {"ja": "標準モデル:", "en": "Standard Model:"},
+    "btn_download_model": {"ja": "モデルをダウンロード", "en": "Download Model"},
+    "upscale_model_ready": {"ja": "✅ ダウンロード済み", "en": "✅ Downloaded"},
+    "upscale_model_missing": {"ja": "⬇ 未ダウンロード（実行前に取得します）", "en": "⬇ Not downloaded yet (will fetch before running)"},
+    "upscale_custom_group": {"ja": "自前アップスケールモデルの使用 (4x-UltraSharp等)", "en": "Use Custom Upscale Model (4x-UltraSharp, etc.)"},
+    "upscale_noncommercial_note": {"ja": "⚠ 自前モデルは各自のライセンス条件（商用可否等）を必ずご確認ください。", "en": "⚠ Please verify the license terms (commercial use, etc.) of any custom model yourself."},
+    "upscale_tile_group": {"ja": "タイル分割設定 (VRAM対策)", "en": "Tile Settings (VRAM management)"},
+    "upscale_tile_size_label": {"ja": "タイルサイズ (px):", "en": "Tile Size (px):"},
+    "upscale_overlap_label": {"ja": "オーバーラップ (px):", "en": "Overlap (px):"},
+    "upscale_tile_fixed_note": {"ja": "※このモデルは入力サイズ固定のため、タイルサイズは自動調整されます。", "en": "※ This model requires a fixed input size; tile size will be adjusted automatically."},
+    "upscale_target_scale_group": {"ja": "出力倍率の微調整 (任意)", "en": "Fine-tune Output Scale (optional)"},
+    "upscale_target_scale_label": {"ja": "目標倍率 (0 = モデル本来の倍率):", "en": "Target Scale (0 = model's native scale):"},
+    "upscale_run_group": {"ja": "実行", "en": "Run"},
+    "msg_model_not_ready": {"ja": "モデルファイルがありません。先に「モデルをダウンロード」を実行してください。", "en": "Model file not found. Please click \"Download Model\" first."},
+    "msg_download_confirm": {"ja": "「{name}」をHugging Faceからダウンロードします ({repo})。よろしいですか？", "en": "This will download \"{name}\" from Hugging Face ({repo}). Continue?"},
+    "confirm_title": {"ja": "確認", "en": "Confirm"},
+
+    # --- マットインペイントタブ ---
+    "matting_source_label": {"ja": "編集対象の出力元:", "en": "Source Output:"},
+    "matting_source_rembg": {"ja": "背景除去の出力", "en": "Background Removal Output"},
+    "matting_source_upscale": {"ja": "アップスケールの出力", "en": "Upscale Output"},
+    "matting_file_list_label": {"ja": "ファイル一覧", "en": "File List"},
+    "matting_no_pymatting": {"ja": "⚠ pymattingがインストールされていません。`pip install pymatting`が必要です。", "en": "⚠ pymatting is not installed. Please run `pip install pymatting`."},
+    "matting_brush_group": {"ja": "ブラシ設定", "en": "Brush Settings"},
+    "matting_brush_size_label": {"ja": "ブラシサイズ:", "en": "Brush Size:"},
+    "matting_brush_unknown": {"ja": "不明領域(境界)", "en": "Unknown (boundary)"},
+    "matting_brush_fg": {"ja": "確実に前景", "en": "Definite Foreground"},
+    "matting_brush_bg": {"ja": "確実に背景", "en": "Definite Background"},
+    "btn_undo": {"ja": "元に戻す (Ctrl+Z)", "en": "Undo (Ctrl+Z)"},
+    "btn_redo": {"ja": "やり直す (Ctrl+Shift+Z)", "en": "Redo (Ctrl+Shift+Z)"},
+    "btn_fit_view": {"ja": "全体表示", "en": "Fit to Window"},
+    "check_preview_alpha": {"ja": "アルファ結果をプレビュー", "en": "Preview Alpha Result"},
+    "btn_save_matting": {"ja": "保存 (output/matting/)", "en": "Save (output/matting/)"},
+    "matting_canvas_empty": {"ja": "左の一覧から画像を選択してください", "en": "Select an image from the list on the left"},
+    "log_matting_saved": {"ja": "【成功】マットインペイント結果を保存しました: {name}", "en": "[Success] Matte inpainting result saved: {name}"},
+    "log_matting_recompute_failed": {"ja": "【エラー】アルファ再計算に失敗しました: {err}", "en": "[Error] Alpha recomputation failed: {err}"},
+    "msg_no_matting_image": {"ja": "編集する画像が選択されていません。", "en": "No image is selected for editing."},
 }
 
 
@@ -188,6 +235,13 @@ LOG_T = {
     "batch_inferring_single": {"ja": "バッチ {num}/{total} を1枚ずつ推論中 ({count}枚)...", "en": "Running inference on batch {num}/{total} one image at a time ({count} images)..."},
     "error_mask_failed": {"ja": "【エラー】{name}: マスク生成に失敗しました", "en": "[Error] {name}: mask generation failed"},
     "batch_complete": {"ja": "=== 完了: 処理に成功したファイル数 {count} 個 ===", "en": "=== Done: {count} file(s) processed successfully ==="},
+
+    # --- アップスケール専用ログ ---
+    "upscale_loading_model": {"ja": "アップスケールモデル（{name}）を読み込み中...", "en": "Loading upscale model ({name})..."},
+    "download_start": {"ja": "モデルをダウンロード中: {name} ...", "en": "Downloading model: {name} ..."},
+    "download_done": {"ja": "✅ ダウンロード完了: {name}", "en": "✅ Download complete: {name}"},
+    "download_failed": {"ja": "【エラー】ダウンロードに失敗しました: {err}", "en": "[Error] Download failed: {err}"},
+    "cuda_fallback_notice": {"ja": "[警告] CUDA EPが有効化されていません。CPUにフォールバックしています。", "en": "[Warning] CUDA EP is not available. Falling back to CPU."},
 }
 
 
@@ -203,6 +257,50 @@ def log_t(lang: str, key: str, **kwargs) -> str:
 
 # 自前ONNXファイルを強制的に読み込ませるためのカスタムセッションクラス
 # 内部モジュールから直接 BiRefNetSession を強制インポートします
+
+# =========================================================================
+# --- 自前ONNXモデル向け: fp16/fp32 自動判定 ＆ 出力レンジ自動正規化 ---
+# 学習環境によって入力dtypeや出力側の最終活性化関数(sigmoid/tanh/線形など)が
+# 異なるため、モデルファイルから実際の仕様を読み取り、rembg側(CustomOnnxSession)・
+# アップスケール側(UpscaleSession)の両方で同じロジックを使い回す。
+# =========================================================================
+_ORT_DTYPE_MAP = {
+    "tensor(float16)": np.float16,
+    "tensor(float)": np.float32,
+    "tensor(double)": np.float64,
+}
+
+
+def ort_input_dtype(session, input_index: int = 0) -> np.dtype:
+    """ONNXモデルが実際に要求する入力dtypeを取得する(fp16/fp32自動判定)。"""
+    type_str = session.get_inputs()[input_index].type
+    return _ORT_DTYPE_MAP.get(type_str, np.float32)
+
+
+def ort_output_dtype(session, output_index: int = 0) -> np.dtype:
+    type_str = session.get_outputs()[output_index].type
+    return _ORT_DTYPE_MAP.get(type_str, np.float32)
+
+
+def auto_normalize_output(raw: np.ndarray) -> np.ndarray:
+    """モデル出力の値域を実測して[0,1]のfloat32へ自動正規化する(「クリップ」自動判定)。
+
+    自前でpth→onnx変換したモデルは、学習時の最終活性化関数(sigmoid/tanh/線形など)
+    によって出力レンジがまちまちで、単純に np.clip(0,1) すると
+      - tanh系(-1〜1中心)の場合: 負の値が全て0に潰れて画像が暗くなる
+      - 生ピクセル値(0〜255)の場合: ほぼ全て1.0に張り付いて白飛びする
+    といった不具合が起きる。min/maxの実測値から代表的な3パターンを判別して補正する。
+    """
+    raw = raw.astype(np.float32, copy=False)
+    lo, hi = float(raw.min()), float(raw.max())
+    if lo < -0.15:
+        # tanh系: -1〜1付近に分布 → 0〜1へ再マップ
+        raw = (raw + 1.0) / 2.0
+    elif hi > 1.5:
+        # 0〜255等の生ピクセル値域
+        raw = raw / 255.0
+    return np.clip(raw, 0.0, 1.0)
+
 
 class CustomOnnxSession(BaseSession):
     """
@@ -237,6 +335,12 @@ class CustomOnnxSession(BaseSession):
         if "CUDAExecutionProvider" not in active_ep:
             print("[警告] CUDA EPが有効化されていません。CPUにフォールバックしています。")
 
+        # --- fp16/fp32自動判定 ---
+        # 自前でpth→onnx変換したモデルはfp16でエクスポートされている場合があり、
+        # float32のまま流し込むと型不一致でエラーになる(または暗黙キャストで精度崩壊する)。
+        self.input_dtype = ort_input_dtype(self.inner_session)
+        print(f"[CustomOnnxSession] 検出した入力dtype: {self.input_dtype}")
+
     @staticmethod
     def _build_providers():
         import onnxruntime as ort
@@ -265,14 +369,14 @@ class CustomOnnxSession(BaseSession):
         img_np = (img_np - mean) / std
 
         img_np = img_np.transpose((2, 0, 1))
-        img_np = np.expand_dims(img_np, axis=0).astype(np.float32)
+        img_np = np.expand_dims(img_np, axis=0).astype(self.input_dtype)  # ← fp16/fp32自動判定
 
         input_name = self.inner_session.get_inputs()[0].name
         outputs = self.inner_session.run(None, {input_name: img_np})
 
         pred = outputs[0][0][0]
-        # 修正: モデル自体が既に0.0〜1.0の確率値を出力しているため、シグモイドは再適用しない
-        mask_np = (np.clip(pred, 0.0, 1.0) * 255).astype(np.uint8)
+        # 修正: 出力の値域(sigmoid[0,1]/tanh[-1,1]/線形など)を実測して自動正規化する
+        mask_np = (auto_normalize_output(pred) * 255).astype(np.uint8)
 
         mask_img = Image.fromarray(mask_np, mode="L")
         mask_img = mask_img.resize((w, h), self.resample_method)  # ← 変更
@@ -295,7 +399,7 @@ class CustomOnnxSession(BaseSession):
             arr = arr.transpose((2, 0, 1))
             batch_np.append(arr)
 
-        batch_tensor = np.stack(batch_np, axis=0).astype(np.float32)  # (N, 3, 1024, 1024)
+        batch_tensor = np.stack(batch_np, axis=0).astype(self.input_dtype)  # ← fp16/fp32自動判定 (N, 3, 1024, 1024)
 
         input_name = self.inner_session.get_inputs()[0].name
         outputs = self.inner_session.run(None, {input_name: batch_tensor})[0]  # (N, 1, 1024, 1024)
@@ -303,7 +407,7 @@ class CustomOnnxSession(BaseSession):
         mask_imgs = []
         for i, (w, h) in enumerate(sizes):
             pred = outputs[i][0]
-            mask_np = (np.clip(pred, 0.0, 1.0) * 255).astype(np.uint8)
+            mask_np = (auto_normalize_output(pred) * 255).astype(np.uint8)
             mask_img = Image.fromarray(mask_np, mode="L").resize((w, h), self.resample_method)  # ← 変更
             mask_imgs.append(mask_img)
 
@@ -569,6 +673,312 @@ class BatchProcessThread(QThread):
         self.finished_signal.emit(success_count)
 
 
+# =========================================================================
+# --- アップスケーラー機能 (Real-ESRGAN系, タイル分割 + IOBinding最適化) ---
+# =========================================================================
+
+# 標準搭載モデル(BSD-3-Clause系/商用利用可、初回選択時にHugging Faceから自動ダウンロード)
+# 注意: qualcomm/Real-ESRGAN-x4plus はNPU向けエクスポートのため入力サイズが
+#       固定されている場合がある。UpscaleSession側で自動検出しタイルサイズを追従させる。
+UPSCALE_STANDARD_MODELS = {
+    "RealESRGAN_x4plus": {
+        "repo_id": "qualcomm/Real-ESRGAN-x4plus",
+        "filename": "Real-ESRGAN-x4plus.onnx",
+        "scale": 4,
+        "commercial": True,
+    },
+    "RealESRGAN_x2plus": {
+        "repo_id": "tidus2102/Real-ESRGAN",
+        "filename": "Real-ESRGAN_x2plus.onnx",
+        "scale": 2,
+        "commercial": True,
+    },
+}
+
+
+class ModelDownloadThread(QThread):
+    """標準アップスケールモデルをHugging Face Hubから非同期ダウンロードする。
+
+    hf_hub_download()内部のtqdm出力に頼ると正確な%進捗をUIに渡せないため、
+    requestsで直接ストリーミングDLし、チャンクごとにprogress_signalを発行する。
+    """
+    progress_signal = pyqtSignal(int)
+    log_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(bool, str)  # (成功したか, 保存先パス or エラーメッセージ)
+
+    def __init__(self, repo_id: str, filename: str, dest_dir: str, lang: str = "ja"):
+        super().__init__()
+        self.repo_id = repo_id
+        self.filename = filename
+        self.dest_dir = dest_dir
+        self.lang = lang
+
+    def run(self):
+        try:
+            from huggingface_hub import hf_hub_url
+            import requests
+
+            url = hf_hub_url(repo_id=self.repo_id, filename=self.filename)
+            dest_path = os.path.join(self.dest_dir, self.filename)
+            tmp_path = dest_path + ".part"
+
+            self.log_signal.emit(log_t(self.lang, "download_start", name=self.filename))
+
+            with requests.get(url, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("content-length", 0))
+                downloaded = 0
+                with open(tmp_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            self.progress_signal.emit(int(downloaded / total * 100))
+
+            os.replace(tmp_path, dest_path)
+            self.log_signal.emit(log_t(self.lang, "download_done", name=self.filename))
+            self.finished_signal.emit(True, dest_path)
+        except Exception as e:
+            self.finished_signal.emit(False, str(e))
+
+
+class UpscaleSession:
+    """Real-ESRGAN系ONNXモデル用の、タイル分割 + IOBinding最適化推論セッション。
+
+    GPU最適化の要点:
+    - 端の欠けタイルもreflectパディングで「常にtile_size四方」に揃え、全タイルの
+      形状を完全固定化する。これにより入出力用GPUバッファ(OrtValue)を最初の1回だけ
+      確保し、以降は update_inplace() でデータ差し替えのみを行う
+      (タイルごとのcudaMalloc/Free、ホスト⇔デバイスの往復コピーを最小化)。
+    - CUDA Execution Providerを優先し、利用不可時はCPUへ自動フォールバックする。
+    - タイル境界はコサイン窓による加重ブレンドで重ね合わせ、段差を目立たなくする。
+    """
+
+    def __init__(self, model_path: str):
+        import onnxruntime as ort
+
+        providers = ort.get_available_providers()
+        use_providers = (
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if "CUDAExecutionProvider" in providers
+            else ["CPUExecutionProvider"]
+        )
+        if "CUDAExecutionProvider" not in providers:
+            print(log_t("ja", "cuda_fallback_notice"))
+
+        so = ort.SessionOptions()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self.session = ort.InferenceSession(model_path, sess_options=so, providers=use_providers)
+        self.provider = self.session.get_providers()[0]
+
+        in0 = self.session.get_inputs()[0]
+        self.input_name = in0.name
+        self.output_name = self.session.get_outputs()[0].name
+
+        # 入力形状が固定(NCHWの全次元が整数)かどうかを検出する。
+        # 一部のNPU向けエクスポートは動的軸を持たず固定サイズしか受け付けない。
+        shape = in0.shape  # 例: [1, 3, 'height', 'width'] または [1, 3, 128, 128]
+        self.fixed_hw = None
+        if len(shape) == 4 and isinstance(shape[2], int) and isinstance(shape[3], int):
+            self.fixed_hw = (shape[2], shape[3])
+
+        self._io_binding = None
+        self._bound_tile_hw = None  # IOBinding用バッファを確保済みのタイルサイズ
+        self._in_ort = None
+        self._out_ort = None
+        self.scale = None  # 初回タイル推論時に出力/入力の空間比から実測する
+
+        # --- fp16/fp32自動判定 ---
+        # 自前でpth→onnx変換したモデルはfp16でエクスポートされている場合があり、
+        # float32のまま流し込むと型不一致エラーや精度崩壊(暗転など)の原因になる。
+        self.input_dtype = ort_input_dtype(self.session)
+        self.output_dtype = ort_output_dtype(self.session)
+        print(f"[UpscaleSession] 検出した入出力dtype: in={self.input_dtype}, out={self.output_dtype}")
+
+    def _ensure_io_binding(self, tile_h: int, tile_w: int):
+        """タイルサイズが前回と同じならGPU入出力バッファを使い回す。"""
+        if self._bound_tile_hw == (tile_h, tile_w) and self._io_binding is not None:
+            return
+        import onnxruntime as ort
+
+        device = "cuda" if self.provider == "CUDAExecutionProvider" else "cpu"
+        dummy_in = np.zeros((1, 3, tile_h, tile_w), dtype=self.input_dtype)
+        out_h, out_w = tile_h * self.scale, tile_w * self.scale
+        dummy_out = np.zeros((1, 3, out_h, out_w), dtype=self.output_dtype)
+
+        self._in_ort = ort.OrtValue.ortvalue_from_numpy(dummy_in, device, 0)
+        self._out_ort = ort.OrtValue.ortvalue_from_numpy(dummy_out, device, 0)
+
+        self._io_binding = self.session.io_binding()
+        self._io_binding.bind_ortvalue_input(self.input_name, self._in_ort)
+        self._io_binding.bind_ortvalue_output(self.output_name, self._out_ort)
+        self._bound_tile_hw = (tile_h, tile_w)
+
+    def _infer_tile(self, tile_np: np.ndarray) -> np.ndarray:
+        """tile_np: (H, W, 3) float32 [0,1] -> (H*scale, W*scale, 3) float32 [0,1]"""
+        h, w = tile_np.shape[:2]
+        chw = np.ascontiguousarray(np.transpose(tile_np, (2, 0, 1))[None, ...].astype(self.input_dtype))
+
+        if self.scale is None:
+            # 初回のみ通常run()で出力形状(=倍率)を実測してから、以降はIOBinding経路に切り替える
+            out = self.session.run([self.output_name], {self.input_name: chw})[0]
+            self.scale = out.shape[2] // h
+        else:
+            self._ensure_io_binding(h, w)
+            self._in_ort.update_inplace(chw)
+            self.session.run_with_iobinding(self._io_binding)
+            out = self._out_ort.numpy()
+
+        # 出力の値域(sigmoid[0,1]/tanh[-1,1]/線形0-255など)を実測して自動正規化する。
+        # ここを固定 np.clip(0,1) にしていると、tanh系モデルで負値が0に潰れて暗転する。
+        out = auto_normalize_output(out[0])
+        return np.transpose(out, (1, 2, 0))  # (H*scale, W*scale, 3)
+
+    @staticmethod
+    def _blend_weight(size: int, overlap: int) -> np.ndarray:
+        """タイル境界のつなぎ目を目立たなくする、コサイン窓による2Dブレンド重み。"""
+        ramp = np.ones(size, dtype=np.float32)
+        if overlap > 0:
+            t = np.linspace(0, np.pi / 2, overlap, dtype=np.float32)
+            edge = np.sin(t) ** 2
+            ramp[:overlap] = edge
+            ramp[-overlap:] = edge[::-1]
+        return ramp[:, None] * ramp[None, :]
+
+    def upscale(self, img: Image.Image, tile_size: int = 512, overlap: int = 32,
+                progress_cb=None, cancel_cb=None) -> Image.Image:
+        # 固定入力サイズのモデルは、そのサイズに強制的に合わせる
+        if self.fixed_hw is not None:
+            tile_size = self.fixed_hw[0]
+            overlap = min(overlap, tile_size // 4)
+
+        arr = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+        h, w = arr.shape[:2]
+
+        stride = max(1, tile_size - overlap)
+        n_tiles_y = max(1, math.ceil(max(0, h - overlap) / stride))
+        n_tiles_x = max(1, math.ceil(max(0, w - overlap) / stride))
+        pad_h = max(0, n_tiles_y * stride + overlap - h)
+        pad_w = max(0, n_tiles_x * stride + overlap - w)
+
+        padded = np.pad(arr, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
+
+        total_tiles = n_tiles_y * n_tiles_x
+        done = 0
+        out_canvas = weight_canvas = weight_tile = None
+
+        for ty in range(n_tiles_y):
+            for tx in range(n_tiles_x):
+                if cancel_cb and cancel_cb():
+                    raise RuntimeError("cancelled")
+                y0, x0 = ty * stride, tx * stride
+                tile = padded[y0:y0 + tile_size, x0:x0 + tile_size]
+
+                up_tile = self._infer_tile(tile)
+                scale = self.scale
+
+                if out_canvas is None:
+                    out_canvas = np.zeros((padded.shape[0] * scale, padded.shape[1] * scale, 3), dtype=np.float32)
+                    weight_canvas = np.zeros((padded.shape[0] * scale, padded.shape[1] * scale, 1), dtype=np.float32)
+                    weight_tile = self._blend_weight(tile_size * scale, overlap * scale)[..., None]
+
+                oy0, ox0 = y0 * scale, x0 * scale
+                out_canvas[oy0:oy0 + tile_size * scale, ox0:ox0 + tile_size * scale] += up_tile * weight_tile
+                weight_canvas[oy0:oy0 + tile_size * scale, ox0:ox0 + tile_size * scale] += weight_tile
+
+                done += 1
+                if progress_cb:
+                    progress_cb(int(done / total_tiles * 100))
+
+        weight_canvas[weight_canvas == 0] = 1.0
+        result = out_canvas / weight_canvas
+        result = result[: h * self.scale, : w * self.scale]
+        result = np.clip(result * 255.0, 0, 255).astype(np.uint8)
+        return Image.fromarray(result)
+
+    def close(self):
+        self._io_binding = None
+        self._in_ort = None
+        self._out_ort = None
+        del self.session
+        import gc
+        gc.collect()
+
+
+class UpscaleProcessThread(QThread):
+    """既存のBatchProcessThreadと同じUXパターン(進捗/ログ/キャンセル/完了シグナル)を踏襲。"""
+    progress_signal = pyqtSignal(int)
+    log_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(int)
+
+    def __init__(self, file_paths, output_dir, model_path, tile_size, overlap,
+                 target_scale=None, resample_method=Image.Resampling.LANCZOS, lang="ja"):
+        super().__init__()
+        self.file_paths = file_paths
+        self.output_dir = output_dir
+        self.model_path = model_path
+        self.tile_size = tile_size
+        self.overlap = overlap
+        self.target_scale = target_scale  # Noneまたは0なら「モデルのネイティブ倍率のまま」
+        self.resample_method = resample_method
+        self.lang = lang
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
+
+    def run(self):
+        total = len(self.file_paths)
+        success_count = 0
+        try:
+            self.log_signal.emit(log_t(self.lang, "upscale_loading_model", name=os.path.basename(self.model_path)))
+            session = UpscaleSession(self.model_path)
+        except Exception as e:
+            msg = log_t(self.lang, "model_load_failed", err=str(e))
+            self.log_signal.emit(msg); print(msg); print(traceback.format_exc())
+            self.finished_signal.emit(0)
+            return
+
+        for index, file_path in enumerate(self.file_paths):
+            if self._is_cancelled:
+                self.log_signal.emit(log_t(self.lang, "cancelled", done=index, total=total))
+                break
+            try:
+                self.log_signal.emit(log_t(self.lang, "processing", index=index + 1, total=total, name=os.path.basename(file_path)))
+                img = Image.open(file_path).convert("RGB")
+
+                def _progress(p, i=index, t=total):
+                    self.progress_signal.emit(int(((i + p / 100.0) / t) * 100))
+
+                result = session.upscale(
+                    img, tile_size=self.tile_size, overlap=self.overlap,
+                    progress_cb=_progress, cancel_cb=lambda: self._is_cancelled,
+                )
+
+                if self.target_scale and session.scale and abs(self.target_scale - session.scale) > 1e-3:
+                    new_w, new_h = int(img.width * self.target_scale), int(img.height * self.target_scale)
+                    result = result.resize((new_w, new_h), self.resample_method)
+
+                stem = Path(file_path).stem
+                out_path = os.path.join(self.output_dir, f"{stem}_upscaled.png")
+                result.save(out_path)
+                success_count += 1
+                self.log_signal.emit(log_t(self.lang, "success_saved", name=os.path.basename(out_path)))
+            except Exception as e:
+                if str(e) == "cancelled":
+                    self.log_signal.emit(log_t(self.lang, "cancelled", done=index, total=total))
+                    break
+                msg = log_t(self.lang, "error_generic", name=os.path.basename(file_path), err=str(e))
+                self.log_signal.emit(msg); print(msg); print(traceback.format_exc())
+
+            self.progress_signal.emit(int(((index + 1) / total) * 100))
+
+        session.close()
+        self.finished_signal.emit(success_count)
+
+
 # ドラッグ＆ドロップ対応のリストウィジェット
 class DropListWidget(QListWidget):
     def __init__(self, parent=None):
@@ -593,6 +1003,454 @@ class DropListWidget(QListWidget):
                     items = [self.item(i).text() for i in range(self.count())]
                     if file_path not in items:
                         self.addItem(file_path)
+
+
+# =========================================================================
+# --- マットインペイント: Trimapベースのアルファマッティング編集キャンバス ---
+# =========================================================================
+class MattingCanvas(QWidget):
+    """QPainterベースのTrimap編集キャンバス。
+
+    操作方法:
+      - 左ドラッグ: 現在のブラシモード(不明/前景/背景)でTrimapを塗る
+      - マウスホイール: カーソル位置基準でズーム
+      - 右ドラッグ / 中ボタンドラッグ: パン
+      - Ctrl+Z / Ctrl+Shift+Z: Undo / Redo
+
+    パフォーマンス方針:
+      ストローク終了時、なぞった範囲のバウンディングボックス(+マージン)だけを
+      切り出してpymattingで再計算する。画像全体を毎回再計算しないため、
+      高解像度画像でも編集操作がサクサク動く。
+    """
+    status_changed = pyqtSignal()  # Undo/Redo可否、保存可否などの外部UI更新用
+    brush_size_changed = pyqtSignal(int)
+
+    BRUSH_BG = 0
+    BRUSH_UNKNOWN = 128
+    BRUSH_FG = 255
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setMinimumSize(300, 300)
+
+        self.image_arr = None        # (H,W,3) uint8 元画像(RGB)
+        self.trimap = None           # (H,W) uint8   0=BG / 128=不明 / 255=FG
+        self.alpha = None            # (H,W) float32 [0,1] 現在のアルファ
+        self.foreground_arr = None   # (H,W,3) uint8 デコンタミ後の前景色
+
+        self.zoom = 1.0
+        self.origin = QPointF(0, 0)  # 画像(0,0)がウィジェット座標のどこに来るか
+        self._user_adjusted_view = False  # ユーザーが手動でズーム/パンしたらリサイズ時の自動fitを止める
+        self._panning = False
+        self._pan_anchor = None
+        self._drawing = False
+        self._last_img_pt = None
+        self._stroke_bbox = None     # (x0,y0,x1,y1) 現在のストロークで塗った範囲
+        self._last_widget_pt = None
+
+        self.brush_size = 30         # 画像ピクセル単位の半径
+        self.brush_mode = self.BRUSH_UNKNOWN
+        self.preview_alpha = False
+
+        self._base_qimage = None
+        self._overlay_dirty = True
+        self._overlay_qimage = None
+        self._preview_dirty = True
+        self._preview_qimage = None
+
+        self._undo_stack = []
+        self._redo_stack = []
+        self._max_undo = 30
+
+        self.recompute_error = None  # UI側でログ出力するためのエラー保持
+
+    # ------------------------------------------------------------------
+    # --- 画像読み込み / 初期Trimap生成 ---
+    # ------------------------------------------------------------------
+    def load_image(self, pil_img: Image.Image):
+        rgba = pil_img.convert("RGBA")
+        arr = np.asarray(rgba)
+        self.image_arr = np.ascontiguousarray(arr[..., :3])
+        if arr[..., 3].min() < 255:
+            self.alpha = arr[..., 3].astype(np.float32) / 255.0
+        else:
+            self.alpha = np.ones(arr.shape[:2], dtype=np.float32)
+        self.foreground_arr = self.image_arr.copy()
+        self.trimap = self._trimap_from_alpha(self.alpha)
+
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._base_qimage = None
+        self._overlay_dirty = True
+        self._preview_dirty = True
+        self.fit_to_window()
+        self.update()
+        self.status_changed.emit()
+
+    @staticmethod
+    def _trimap_from_alpha(alpha: np.ndarray) -> np.ndarray:
+        """既存のアルファチャンネルから初期Trimapを自動生成する。
+        alpha≈0/1の内部は確定領域として扱い、境界付近だけを「不明」帯として残す。
+        アルファが全く無い(全て1.0)画像は全域「不明」として、ユーザーの手塗りに委ねる。
+        """
+        trimap = np.full(alpha.shape, 128, dtype=np.uint8)
+        trimap[alpha > 0.95] = 255
+        trimap[alpha < 0.05] = 0
+        return trimap
+
+    def has_image(self) -> bool:
+        return self.image_arr is not None
+
+    # ------------------------------------------------------------------
+    # --- 表示制御 ---
+    # ------------------------------------------------------------------
+    def fit_to_window(self):
+        if self.image_arr is None:
+            return
+        h, w = self.image_arr.shape[:2]
+        margin = 20
+        zx = max(self.width() - margin, 50) / w
+        zy = max(self.height() - margin, 50) / h
+        self.zoom = max(0.02, min(zx, zy, 8.0))
+        self.origin = QPointF(
+            (self.width() - w * self.zoom) / 2,
+            (self.height() - h * self.zoom) / 2,
+        )
+        self._user_adjusted_view = False
+        self.update()
+
+    def set_preview_alpha(self, enabled: bool):
+        self.preview_alpha = enabled
+        self._preview_dirty = True
+        self.update()
+
+    def set_brush_mode(self, mode: int):
+        self.brush_mode = mode
+
+    def set_brush_size(self, size: int):
+        if self.brush_size != size:
+            self.brush_size = size
+            self.update()
+            self.brush_size_changed.emit(size)
+
+    # ------------------------------------------------------------------
+    # --- Undo / Redo (Trimap全体のスナップショット、最低限のスタック実装) ---
+    # ------------------------------------------------------------------
+    def _push_undo(self):
+        if self.trimap is None:
+            return
+        self._undo_stack.append(self.trimap.copy())
+        if len(self._undo_stack) > self._max_undo:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self.status_changed.emit()
+
+    def undo(self):
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self.trimap.copy())
+        self.trimap = self._undo_stack.pop()
+        self._recompute_full()
+        self.status_changed.emit()
+
+    def redo(self):
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self.trimap.copy())
+        self.trimap = self._redo_stack.pop()
+        self._recompute_full()
+        self.status_changed.emit()
+
+    def can_undo(self) -> bool:
+        return bool(self._undo_stack)
+
+    def can_redo(self) -> bool:
+        return bool(self._redo_stack)
+
+    # ------------------------------------------------------------------
+    # --- pymattingによるアルファ再計算 (バウンディングボックス限定) ---
+    # ------------------------------------------------------------------
+# 変更後 (最適化および堅牢化リファクタリング)
+    def _recompute_region(self, bbox):
+        if self.image_arr is None:
+            return
+
+        x0, y0, x1, y1 = bbox
+        margin = max(8, self.brush_size)
+        h, w = self.image_arr.shape[:2]
+        x0 = max(0, x0 - margin); y0 = max(0, y0 - margin)
+        x1 = min(w, x1 + margin); y1 = min(h, y1 + margin)
+        if x1 <= x0 or y1 <= y0:
+            return
+
+        trimap_crop = self.trimap[y0:y1, x0:x1]
+
+        if not PYMATTING_AVAILABLE:
+            self.alpha[y0:y1, x0:x1] = (trimap_crop.astype(np.float32) / 255.0)
+            self.recompute_error = "pymatting_missing"
+            self._overlay_dirty = True
+            self._preview_dirty = True
+            return
+
+        # pymattingの例外防止のための事前判定: トリマップ内に既知の背景(0)と前景(255)が
+        # 両方存在しない場合、estimate_alpha_cfは解けずValueErrorになる。
+        # 不明領域そのものが無い場合も呼ぶ意味が無い。どちらのケースも
+        # トリマップ通りの硬いカットオフだけを即座に反映し、応答性を優先する。
+        has_unknown = np.any(trimap_crop == self.BRUSH_UNKNOWN)
+        has_bg = np.any(trimap_crop == self.BRUSH_BG)
+        has_fg = np.any(trimap_crop == self.BRUSH_FG)
+
+        if not has_unknown or not (has_bg and has_fg):
+            self.alpha[y0:y1, x0:x1] = (trimap_crop.astype(np.float32) / 255.0)
+            self.recompute_error = None
+            self._overlay_dirty = True
+            self._preview_dirty = True
+            return
+
+        try:
+            img_crop = self.image_arr[y0:y1, x0:x1].astype(np.float64) / 255.0
+            tri_crop = trimap_crop.astype(np.float64) / 255.0
+            alpha_crop = estimate_alpha_cf(img_crop, tri_crop)
+            fg_crop, _bg_crop = estimate_foreground_ml(img_crop, alpha_crop, return_background=True)
+            self.alpha[y0:y1, x0:x1] = alpha_crop.astype(np.float32)
+            self.foreground_arr[y0:y1, x0:x1] = np.clip(fg_crop * 255.0, 0, 255).astype(np.uint8)
+            self.recompute_error = None
+        except Exception as e:
+            # 例外時に何も更新しないと「保存しても無反応」に見えるため、
+            # 最低限トリマップの硬いカットオフにフォールバックしつつコンソールに出力する。
+            print(f"[MattingCanvas] estimate_alpha_cf failed: {e}")
+            print(traceback.format_exc())
+            self.alpha[y0:y1, x0:x1] = (trimap_crop.astype(np.float32) / 255.0)
+            self.recompute_error = str(e)
+
+        self._overlay_dirty = True
+        self._preview_dirty = True
+
+    def _recompute_full(self):
+        if self.image_arr is None:
+            return
+        h, w = self.image_arr.shape[:2]
+        self._recompute_region((0, 0, w, h))
+        self.update()
+
+    # ------------------------------------------------------------------
+    # --- 座標変換 ---
+    # ------------------------------------------------------------------
+    def _widget_to_image(self, pos) -> tuple:
+        x = (pos.x() - self.origin.x()) / self.zoom
+        y = (pos.y() - self.origin.y()) / self.zoom
+        return x, y
+
+    # ------------------------------------------------------------------
+    # --- ブラシ描画 ---
+    # ------------------------------------------------------------------
+    def _stamp_brush(self, ix: float, iy: float, bbox_acc: list):
+        if self.trimap is None:
+            return
+        h, w = self.trimap.shape
+        r = self.brush_size
+        x0, x1 = int(max(0, ix - r)), int(min(w, ix + r + 1))
+        y0, y1 = int(max(0, iy - r)), int(min(h, iy + r + 1))
+        if x1 <= x0 or y1 <= y0:
+            return
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        mask = (xx - ix) ** 2 + (yy - iy) ** 2 <= r ** 2
+        self.trimap[y0:y1, x0:x1][mask] = self.brush_mode
+
+        bbox_acc[0] = min(bbox_acc[0], x0); bbox_acc[1] = min(bbox_acc[1], y0)
+        bbox_acc[2] = max(bbox_acc[2], x1); bbox_acc[3] = max(bbox_acc[3], y1)
+
+    def _stamp_line(self, p0, p1, bbox_acc: list):
+        """速いドラッグでも隙間ができないよう、2点間を補間してスタンプする。"""
+        dist = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+        steps = max(1, int(dist / max(1, self.brush_size * 0.5)))
+        for i in range(steps + 1):
+            t = i / steps
+            self._stamp_brush(p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t, bbox_acc)
+
+    # ------------------------------------------------------------------
+    # --- マウス/ホイール/キーボード イベント ---
+    # ------------------------------------------------------------------
+    def mousePressEvent(self, event):
+        if self.image_arr is None:
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._push_undo()
+            self._drawing = True
+            ix, iy = self._widget_to_image(event.position())
+            self._last_img_pt = (ix, iy)
+            self._stroke_bbox = [ix, iy, ix, iy]
+            bbox_acc = self._stroke_bbox
+            self._stamp_brush(ix, iy, bbox_acc)
+            self._overlay_dirty = True
+            self.update()
+        elif event.button() in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
+            self._panning = True
+            self._pan_anchor = (event.position(), QPointF(self.origin))
+
+    def mouseMoveEvent(self, event):
+        self._last_widget_pt = event.position()
+        if self._drawing and self.image_arr is not None:
+            ix, iy = self._widget_to_image(event.position())
+            self._stamp_line(self._last_img_pt, (ix, iy), self._stroke_bbox)
+            self._last_img_pt = (ix, iy)
+            self._overlay_dirty = True
+            self.update()
+        elif self._panning and self._pan_anchor is not None:
+            start_pos, start_origin = self._pan_anchor
+            delta = event.position() - start_pos
+            self.origin = QPointF(start_origin.x() + delta.x(), start_origin.y() + delta.y())
+            self._user_adjusted_view = True
+            self.update()
+        else:
+            self.update()  # ブラシカーソル追従のための再描画
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._drawing:
+            self._drawing = False
+            if self._stroke_bbox is not None:
+                x0, y0, x1, y1 = self._stroke_bbox
+                bbox = (int(x0) - 1, int(y0) - 1, int(x1) + 1, int(y1) + 1)
+                self._recompute_region(bbox)
+            self._stroke_bbox = None
+            self.update()
+            self.status_changed.emit()
+        elif event.button() in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
+            self._panning = False
+            self._pan_anchor = None
+
+    def wheelEvent(self, event):
+        # Ctrlキーが押されている場合はブラシサイズを変更、押されていない場合は既存のズーム処理
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                new_size = min(150, self.brush_size + 2)
+            else:
+                new_size = max(2, self.brush_size - 2)
+            self.set_brush_size(new_size)
+            event.accept()
+            return
+
+        if self.image_arr is None:
+            return
+        old_zoom = self.zoom
+        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        new_zoom = max(0.02, min(old_zoom * factor, 16.0))
+
+        # カーソル位置を中心にズームする(カーソル直下の画像座標を維持)
+        cursor = event.position()
+        img_pt = self._widget_to_image(cursor)
+        self.zoom = new_zoom
+        self.origin = QPointF(
+            cursor.x() - img_pt[0] * self.zoom,
+            cursor.y() - img_pt[1] * self.zoom,
+        )
+        self._user_adjusted_view = True
+        self.update()
+        super().wheelEvent(event)
+
+    def keyPressEvent(self, event):
+        ctrl = event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        shift = event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+        if ctrl and event.key() == Qt.Key.Key_Z and shift:
+            self.redo()
+        elif ctrl and event.key() == Qt.Key.Key_Z:
+            self.undo()
+        elif ctrl and event.key() == Qt.Key.Key_Y:
+            self.redo()
+        elif event.key() == Qt.Key.Key_BracketLeft:
+            new_size = max(2, self.brush_size - 5)
+            self.set_brush_size(new_size)  # ここで自動的にシグナルが飛びます
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_BracketRight:
+            new_size = min(150, self.brush_size + 5)
+            self.set_brush_size(new_size)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.image_arr is not None and not self._user_adjusted_view:
+            self.fit_to_window()
+
+    # ------------------------------------------------------------------
+    # --- 描画本体 ---
+    # ------------------------------------------------------------------
+    def _rebuild_base_qimage(self):
+        h, w = self.image_arr.shape[:2]
+        self._base_qimage = QImage(self.image_arr.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
+
+    def _rebuild_overlay_qimage(self):
+        h, w = self.trimap.shape
+        overlay = np.zeros((h, w, 4), dtype=np.uint8)
+        overlay[self.trimap == self.BRUSH_UNKNOWN] = (255, 210, 0, 90)   # 不明領域: 黄色半透明
+        overlay[self.trimap == self.BRUSH_BG] = (230, 30, 30, 60)        # 確実に背景: 赤系半透明
+        self._overlay_qimage = QImage(overlay.tobytes(), w, h, w * 4, QImage.Format.Format_RGBA8888)
+        self._overlay_dirty = False
+
+    def _rebuild_preview_qimage(self):
+        h, w = self.foreground_arr.shape[:2]
+        # チェッカーボード背景に、現在のアルファで合成したプレビューを重ねる
+        tile = 12
+        checker = (((np.arange(h)[:, None] // tile) + (np.arange(w)[None, :] // tile)) % 2)
+        bg = np.where(checker[..., None] == 0, 200, 150).astype(np.uint8)
+        bg = np.repeat(bg, 3, axis=2)
+        a = self.alpha[..., None]
+        composed = (self.foreground_arr.astype(np.float32) * a + bg.astype(np.float32) * (1 - a))
+        composed = np.clip(composed, 0, 255).astype(np.uint8)
+        composed = np.ascontiguousarray(composed)
+        self._preview_qimage = QImage(composed.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
+        self._preview_dirty = False
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(43, 43, 43))
+
+        if self.image_arr is None:
+            painter.setPen(QColor(190, 190, 190))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.property("empty_text") or "")
+            painter.end()
+            return
+
+        if self.preview_alpha:
+            if self._preview_dirty or self._preview_qimage is None:
+                self._rebuild_preview_qimage()
+            base_img = self._preview_qimage
+        else:
+            if self._base_qimage is None:
+                self._rebuild_base_qimage()
+            base_img = self._base_qimage
+
+        painter.save()
+        painter.translate(self.origin)
+        painter.scale(self.zoom, self.zoom)
+        painter.drawImage(0, 0, base_img)
+
+        if not self.preview_alpha:
+            if self._overlay_dirty or self._overlay_qimage is None:
+                self._rebuild_overlay_qimage()
+            painter.drawImage(0, 0, self._overlay_qimage)
+        painter.restore()
+
+        if self._last_widget_pt is not None and not self._panning:
+            painter.setPen(QColor(255, 255, 255, 200))
+            r = self.brush_size * self.zoom
+            painter.drawEllipse(self._last_widget_pt, r, r)
+        painter.end()
+
+    # ------------------------------------------------------------------
+    # --- 結果取得 ---
+    # ------------------------------------------------------------------
+    def get_result_rgba(self) -> Image.Image:
+        h, w = self.foreground_arr.shape[:2]
+        rgba = np.dstack([self.foreground_arr, np.clip(self.alpha * 255.0, 0, 255).astype(np.uint8)])
+        return Image.fromarray(rgba, mode="RGBA")
+
+
 # メインウィンドウクラス
 class RembgGuiApp(QMainWindow):
 
@@ -693,16 +1551,18 @@ class RembgGuiApp(QMainWindow):
         for index, key in enumerate(("tab_rembg", "tab_upscale", "tab_matting", "tab_output")):
             self.tab_widget.setTabText(index, self.tr(key))
 
-        # プレースホルダータブ(アップスケール/マットインペイント)
-        if hasattr(self, "placeholder_upscale"):
-            self.placeholder_upscale.retranslate(self.lang)
-        if hasattr(self, "placeholder_matting"):
-            self.placeholder_matting.retranslate(self.lang)
-
         # 動的に文言が変わる要素は個別に再構築
         self.update_model_description(self.combo_model.currentText())
         self._retranslate_resample_combo()
         self._retranslate_output_dir_groups()
+        if hasattr(self, "combo_upscale_standard"):
+            self._update_upscale_model_status(self.combo_upscale_standard.currentText())
+        if hasattr(self, "combo_matting_source"):
+            self.combo_matting_source.setItemText(0, self.tr("matting_source_rembg"))
+            self.combo_matting_source.setItemText(1, self.tr("matting_source_upscale"))
+        if hasattr(self, "matting_canvas"):
+            self.matting_canvas.setProperty("empty_text", self.tr("matting_canvas_empty"))
+            self.matting_canvas.update()
 
         # プレビュー欄は「プレースホルダー文言」か「画像そのもの」かを状態に応じて出し分けているため、
         # setText() を無条件に呼ぶとpixmap表示中のプレビューが消えてしまう。
@@ -725,38 +1585,33 @@ class RembgGuiApp(QMainWindow):
         main_layout.setSpacing(10)
 
         # --- 左側: 共通パネル(ファイルリスト・プレビュー・ログ) ---
-        left_layout = self._build_shared_left_panel()
-        main_layout.addLayout(left_layout, stretch=4)
+        # 「背景除去」「アップスケール」タブで共有。マットインペイントタブでは
+        # 専用レイアウトを使うため、タブ切り替え時にこのウィジェットごと隠す。
+        self.shared_left_widget = QWidget()
+        self.shared_left_widget.setLayout(self._build_shared_left_panel())
+        main_layout.addWidget(self.shared_left_widget, stretch=4)
 
         # --- 右側: タブウィジェット ---
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget, stretch=3)
 
-        self.placeholder_upscale = PlaceholderTab("tab_upscale", self.lang)
-        self.placeholder_matting = PlaceholderTab("tab_matting", self.lang)
+        matting_tab = self._build_matting_tab()
+        self._matting_tab_widget = matting_tab
 
         self.tab_widget.addTab(self._build_rembg_tab(), self.tr("tab_rembg"))
-        self.tab_widget.addTab(self.placeholder_upscale, self.tr("tab_upscale"))
-        self.tab_widget.addTab(self.placeholder_matting, self.tr("tab_matting"))
+        self.tab_widget.addTab(self._build_upscale_tab(), self.tr("tab_upscale"))
+        self.tab_widget.addTab(matting_tab, self.tr("tab_matting"))
         self.tab_widget.addTab(self._build_output_settings_tab(), self.tr("tab_output"))
-        # self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        # main_layout.addWidget(self.main_splitter)
 
-        # left_widget = QWidget()
-        # left_widget.setLayout(self._build_shared_left_panel())
-        # self.main_splitter.addWidget(left_widget)
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
 
-        # self.tab_widget = QTabWidget()
-        # self.main_splitter.addWidget(self.tab_widget)
-
-        # self.main_splitter.setSizes([700, 600])  # 初期比率(背景除去/アップスケール向け)
-
-        # self.tab_widget.addTab(self._build_rembg_tab(), "背景除去")
-        # self.tab_widget.addTab(PlaceholderTab("アップスケール"), "アップスケール")
-        # self.tab_widget.addTab(self._build_matting_tab(), "マットインペイント")
-        # self.tab_widget.addTab(self._build_output_settings_tab(), "保存先設定")
-
-        # self.tab_widget.currentChanged.connect(self.on_tab_changed)
+    def on_tab_changed(self, index: int):
+        """マットインペイントタブは専用レイアウトのため、共有パネルの幅を0にして
+        キャンバスに全幅を譲る(仕様: タブ切り替え時に比率を動的変更)。"""
+        is_matting = self.tab_widget.widget(index) is getattr(self, "_matting_tab_widget", None)
+        self.shared_left_widget.setVisible(not is_matting)
+        if is_matting and hasattr(self, "matting_canvas") and self.matting_canvas.has_image():
+            self.matting_canvas.update()
 
     def _build_shared_left_panel(self) -> QVBoxLayout:
         # ---------------- 左側: ファイルリスト ----------------
@@ -1120,6 +1975,470 @@ class RembgGuiApp(QMainWindow):
 
         right_layout.addStretch(1)
         return tab
+
+    # ------------------------------------------------------------------
+    # --- アップスケールタブ ---
+    # ------------------------------------------------------------------
+    def _build_upscale_tab(self) -> QWidget:
+        tab = QWidget()
+        right_layout = QVBoxLayout(tab)
+        right_layout.setSpacing(5)
+
+        # --- 標準モデル(HFから自動DL) ---
+        model_group = QGroupBox()
+        self._reg(model_group, "upscale_model_group", kind="title")
+        model_form = QFormLayout()
+        model_form.setContentsMargins(5, 5, 5, 5)
+
+        self.combo_upscale_standard = QComboBox()
+        self.combo_upscale_standard.addItems(list(UPSCALE_STANDARD_MODELS.keys()))
+        self.combo_upscale_standard.currentTextChanged.connect(self._update_upscale_model_status)
+        model_form.addRow(self._reg(QLabel(), "upscale_standard_label"), self.combo_upscale_standard)
+
+        self.label_upscale_model_status = QLabel()
+        self.label_upscale_model_status.setStyleSheet("color: #b5b5b5; font-size: 11px;")
+        model_form.addRow(self.label_upscale_model_status)
+
+        self.btn_download_upscale_model = QPushButton()
+        self._reg(self.btn_download_upscale_model, "btn_download_model")
+        self.btn_download_upscale_model.clicked.connect(self.download_upscale_model)
+        model_form.addRow(self.btn_download_upscale_model)
+
+        model_group.setLayout(model_form)
+        right_layout.addWidget(model_group)
+
+        # --- 自前アップスケールモデル(4x-UltraSharp等、非商用ライセンス注意) ---
+        custom_group = QGroupBox()
+        self._reg(custom_group, "upscale_custom_group", kind="title")
+        custom_form = QFormLayout()
+        custom_form.setContentsMargins(5, 5, 5, 5)
+
+        self.check_use_custom_upscale = QCheckBox()
+        self._reg(self.check_use_custom_upscale, "check_use_custom")
+        self.check_use_custom_upscale.stateChanged.connect(self.on_custom_upscale_toggle)
+        custom_form.addRow(self.check_use_custom_upscale)
+
+        self.combo_custom_upscale = QComboBox()
+        self.combo_custom_upscale.setEnabled(False)
+        self.btn_refresh_upscale_onnx = QPushButton()
+        self._reg(self.btn_refresh_upscale_onnx, "btn_refresh")
+        self.btn_refresh_upscale_onnx.clicked.connect(self.refresh_upscale_onnx_list)
+        self.btn_refresh_upscale_onnx.setEnabled(False)
+
+        onnx_row = QHBoxLayout()
+        onnx_row.addWidget(self.combo_custom_upscale)
+        onnx_row.addWidget(self.btn_refresh_upscale_onnx)
+        custom_form.addRow(self._reg(QLabel(), "model_select_label"), onnx_row)
+
+        self.btn_browse_upscale_onnx = QPushButton()
+        self._reg(self.btn_browse_upscale_onnx, "btn_browse_onnx")
+        self.btn_browse_upscale_onnx.setEnabled(False)
+        self.btn_browse_upscale_onnx.clicked.connect(self.browse_upscale_onnx_file)
+        custom_form.addRow(self.btn_browse_upscale_onnx)
+
+        note = QLabel()
+        self._reg(note, "upscale_noncommercial_note")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #e0a030; font-size: 11px;")
+        custom_form.addRow(note)
+
+        custom_group.setLayout(custom_form)
+        right_layout.addWidget(custom_group)
+
+        # --- タイル分割設定(VRAM対策) ---
+        tile_group = QGroupBox()
+        self._reg(tile_group, "upscale_tile_group", kind="title")
+        tile_form = QFormLayout()
+        tile_form.setContentsMargins(5, 5, 5, 5)
+
+        self.spin_tile_size = QSpinBox()
+        self.spin_tile_size.setRange(128, 1024)
+        self.spin_tile_size.setSingleStep(32)
+        self.spin_tile_size.setValue(512)
+        self.spin_tile_size.setToolTip(
+            "大きいほど高速・高精度になりますがVRAM消費が急増します(RTX4070Ti 12GBなら512が目安)。"
+            if self.lang == "ja" else
+            "Larger = faster and higher quality but VRAM usage rises sharply (512 is a good default on a 12GB RTX 4070 Ti)."
+        )
+        tile_form.addRow(self._reg(QLabel(), "upscale_tile_size_label"), self.spin_tile_size)
+
+        self.spin_tile_overlap = QSpinBox()
+        self.spin_tile_overlap.setRange(0, 128)
+        self.spin_tile_overlap.setSingleStep(8)
+        self.spin_tile_overlap.setValue(32)
+        self.spin_tile_overlap.setToolTip(
+            "タイル境界のブレンド幅。大きいほど継ぎ目は目立たなくなりますが計算量が増えます。"
+            if self.lang == "ja" else
+            "Blend width at tile boundaries. Larger reduces visible seams but costs more compute."
+        )
+        tile_form.addRow(self._reg(QLabel(), "upscale_overlap_label"), self.spin_tile_overlap)
+
+        self.label_tile_fixed_note = QLabel()
+        self._reg(self.label_tile_fixed_note, "upscale_tile_fixed_note")
+        self.label_tile_fixed_note.setWordWrap(True)
+        self.label_tile_fixed_note.setStyleSheet("color: #888; font-size: 10px;")
+        self.label_tile_fixed_note.setVisible(False)
+        tile_form.addRow(self.label_tile_fixed_note)
+
+        tile_group.setLayout(tile_form)
+        right_layout.addWidget(tile_group)
+
+        # --- 出力倍率の微調整(任意、既存のresampleコンボを再利用) ---
+        scale_group = QGroupBox()
+        self._reg(scale_group, "upscale_target_scale_group", kind="title")
+        scale_form = QFormLayout()
+        scale_form.setContentsMargins(5, 5, 5, 5)
+
+        self.spin_target_scale = QDoubleSpinBox()
+        self.spin_target_scale.setRange(0.0, 8.0)
+        self.spin_target_scale.setSingleStep(0.5)
+        self.spin_target_scale.setValue(0.0)
+        self.spin_target_scale.setToolTip(
+            "0のままならモデル本来の倍率(x2/x4等)で出力します。値を指定すると\n"
+            "モデル出力後に「リサンプリング方式」タブの設定を使ってその倍率へ再調整します。"
+            if self.lang == "ja" else
+            "Leave at 0 to output at the model's native scale (x2/x4, etc.). If set, the model's "
+            "output is rescaled to this factor afterward using the Resampling Method setting."
+        )
+        scale_form.addRow(self._reg(QLabel(), "upscale_target_scale_label"), self.spin_target_scale)
+        scale_group.setLayout(scale_form)
+        right_layout.addWidget(scale_group)
+
+        # --- 実行/キャンセル(共有の進捗バー・ログを流用) ---
+        run_group = QGroupBox()
+        self._reg(run_group, "upscale_run_group", kind="title")
+        run_layout = QHBoxLayout()
+
+        self.btn_run_upscale = QPushButton()
+        self._reg(self.btn_run_upscale, "btn_run")
+        self.btn_run_upscale.setStyleSheet("font-size: 15px; font-weight: bold; background-color: #2b8a3e; color: white; padding: 8px;")
+        self.btn_run_upscale.clicked.connect(self.start_upscale_processing)
+
+        self.btn_cancel_upscale = QPushButton()
+        self._reg(self.btn_cancel_upscale, "btn_cancel")
+        self.btn_cancel_upscale.setEnabled(False)
+        self.btn_cancel_upscale.setStyleSheet("font-size: 15px; font-weight: bold; background-color: #c92a2a; color: white; padding: 8px;")
+        self.btn_cancel_upscale.clicked.connect(self.cancel_upscale_processing)
+
+        run_layout.addWidget(self.btn_run_upscale)
+        run_layout.addWidget(self.btn_cancel_upscale)
+        run_group.setLayout(run_layout)
+        right_layout.addWidget(run_group)
+
+        right_layout.addStretch(1)
+        self._update_upscale_model_status(self.combo_upscale_standard.currentText())
+        return tab
+
+    def _standard_upscale_model_path(self, model_key: str) -> str:
+        info = UPSCALE_STANDARD_MODELS[model_key]
+        return os.path.join(self.onnx_upscale_dir, info["filename"])
+
+    def _update_upscale_model_status(self, model_key: str):
+        if not model_key:
+            return
+        path = self._standard_upscale_model_path(model_key)
+        ready = os.path.exists(path)
+        self.label_upscale_model_status.setText(
+            self.tr("upscale_model_ready") if ready else self.tr("upscale_model_missing")
+        )
+        self.btn_download_upscale_model.setEnabled(not ready)
+
+    def download_upscale_model(self):
+        model_key = self.combo_upscale_standard.currentText()
+        info = UPSCALE_STANDARD_MODELS[model_key]
+        reply = QMessageBox.question(
+            self, self.tr("confirm_title"),
+            self.tr("msg_download_confirm", name=model_key, repo=info["repo_id"]),
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.btn_download_upscale_model.setEnabled(False)
+        self.dl_thread = ModelDownloadThread(
+            info["repo_id"], info["filename"], self.onnx_upscale_dir, lang=self.lang
+        )
+        self.dl_thread.progress_signal.connect(self.progress_bar.setValue)
+        self.dl_thread.log_signal.connect(self.append_log)
+        self.dl_thread.finished_signal.connect(self._on_download_finished)
+        self.dl_thread.start()
+
+    def _on_download_finished(self, success: bool, message: str):
+        if not success:
+            self.append_log(self.tr("download_failed", err=message))
+            QMessageBox.warning(self, self.tr("error_title"), self.tr("download_failed", err=message))
+        self._update_upscale_model_status(self.combo_upscale_standard.currentText())
+        self.progress_bar.setValue(0)
+
+    def refresh_upscale_onnx_list(self):
+        self.combo_custom_upscale.clear()
+        files = sorted(f for f in os.listdir(self.onnx_upscale_dir) if f.lower().endswith(".onnx"))
+        if not files:
+            self.combo_custom_upscale.addItem(self.tr("onnx_list_empty"))
+        else:
+            self.combo_custom_upscale.addItems(files)
+
+    def on_custom_upscale_toggle(self, state):
+        is_custom = self.check_use_custom_upscale.isChecked()
+        self.combo_custom_upscale.setEnabled(is_custom)
+        self.btn_refresh_upscale_onnx.setEnabled(is_custom)
+        self.btn_browse_upscale_onnx.setEnabled(is_custom)
+        self.combo_upscale_standard.setEnabled(not is_custom)
+        self.btn_download_upscale_model.setEnabled(not is_custom and self.btn_download_upscale_model.isEnabled())
+        if is_custom:
+            self.refresh_upscale_onnx_list()
+
+    def browse_upscale_onnx_file(self):
+        dialog_title = "自前アップスケールモデルを選択" if self.lang == "ja" else "Select Custom Upscale Model"
+        file_path, _ = QFileDialog.getOpenFileName(self, dialog_title, "", "ONNX Models (*.onnx)")
+        if not file_path:
+            return
+        dest_path = os.path.join(self.onnx_upscale_dir, os.path.basename(file_path))
+        try:
+            if os.path.abspath(file_path) != os.path.abspath(dest_path):
+                shutil.copy2(file_path, dest_path)
+            self.refresh_upscale_onnx_list()
+            self.combo_custom_upscale.setCurrentText(os.path.basename(dest_path))
+        except Exception as e:
+            QMessageBox.warning(self, self.tr("error_title"), self.tr("msg_onnx_copy_failed", err=e))
+
+    def start_upscale_processing(self):
+        file_count = self.file_list.count()
+        if file_count == 0:
+            QMessageBox.warning(self, self.tr("warning_title"), self.tr("msg_no_files"))
+            return
+
+        output_dir = self.edit_output_upscale.text().strip()
+        if not output_dir:
+            QMessageBox.warning(self, self.tr("warning_title"), self.tr("msg_no_output_dir"))
+            return
+        if not os.path.isdir(output_dir):
+            QMessageBox.warning(self, self.tr("warning_title"), self.tr("msg_output_dir_not_found"))
+            return
+
+        if self.check_use_custom_upscale.isChecked():
+            selected_file = self.combo_custom_upscale.currentText()
+            if not selected_file or not selected_file.lower().endswith(".onnx"):
+                QMessageBox.warning(self, self.tr("warning_title"), self.tr("msg_no_custom_onnx_selected"))
+                return
+            model_path = os.path.join(self.onnx_upscale_dir, selected_file)
+        else:
+            model_key = self.combo_upscale_standard.currentText()
+            model_path = self._standard_upscale_model_path(model_key)
+            if not os.path.exists(model_path):
+                QMessageBox.warning(self, self.tr("warning_title"), self.tr("msg_model_not_ready"))
+                return
+
+        file_paths = [self.file_list.item(i).text() for i in range(file_count)]
+        target_scale = self.spin_target_scale.value() or None
+        resample_method = RESAMPLE_PIL[self.combo_resample.currentData()]
+
+        self.upscale_thread = UpscaleProcessThread(
+            file_paths, output_dir, model_path,
+            tile_size=self.spin_tile_size.value(),
+            overlap=self.spin_tile_overlap.value(),
+            target_scale=target_scale,
+            resample_method=resample_method,
+            lang=self.lang,
+        )
+        self.upscale_thread.progress_signal.connect(self.progress_bar.setValue)
+        self.upscale_thread.log_signal.connect(self.append_log)
+        self.upscale_thread.finished_signal.connect(self.on_upscale_finished)
+
+        self.btn_run_upscale.setEnabled(False)
+        self.btn_cancel_upscale.setEnabled(True)
+        self.upscale_thread.start()
+
+    def cancel_upscale_processing(self):
+        if hasattr(self, "upscale_thread") and self.upscale_thread.isRunning():
+            self.upscale_thread.cancel()
+        self.btn_cancel_upscale.setEnabled(False)
+        self.append_log(self.tr("log_cancel_requested"))
+
+    def on_upscale_finished(self, success_count):
+        self.btn_run_upscale.setEnabled(True)
+        self.btn_cancel_upscale.setEnabled(False)
+        self.append_log(log_t(self.lang, "batch_complete", count=success_count))
+
+    # ------------------------------------------------------------------
+    # --- マットインペイントタブ ---
+    # 仕様上、共有パネル(file_list/プレビュー/ログ)は使わずタブ内で完結させる。
+    # ------------------------------------------------------------------
+    def _build_matting_tab(self) -> QWidget:
+        tab = QWidget()
+        outer = QHBoxLayout(tab)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        # ---------------- 左: 出力元切り替え + タブ内専用ファイル一覧 ----------------
+        left = QWidget()
+        left.setMaximumWidth(260)
+        left_layout = QVBoxLayout(left)
+
+        self.combo_matting_source = QComboBox()
+        self.combo_matting_source.addItem(self.tr("matting_source_rembg"), "rembg")
+        self.combo_matting_source.addItem(self.tr("matting_source_upscale"), "upscale")
+        self.combo_matting_source.currentIndexChanged.connect(self.refresh_matting_file_list)
+        left_layout.addWidget(self._reg(QLabel(), "matting_source_label"))
+        left_layout.addWidget(self.combo_matting_source)
+
+        self.matting_file_list = QListWidget()
+        self.matting_file_list.currentItemChanged.connect(self.on_matting_file_selected)
+        left_layout.addWidget(self.matting_file_list, stretch=1)
+
+        if not PYMATTING_AVAILABLE:
+            warn = QLabel()
+            self._reg(warn, "matting_no_pymatting")
+            warn.setWordWrap(True)
+            warn.setStyleSheet("color: #e05050; font-size: 11px;")
+            left_layout.addWidget(warn)
+
+        # 修正: 共有ログ(log_view)はこのタブでは非表示になるため、
+        # 保存結果や再計算エラーをこのタブ内だけで完結して確認できるよう専用ラベルを設置する。
+        self.label_matting_status = QLabel()
+        self.label_matting_status.setWordWrap(True)
+        self.label_matting_status.setStyleSheet("color: #b5b5b5; font-size: 11px;")
+        left_layout.addWidget(self.label_matting_status)
+
+        # --- ブラシ設定 ---
+        brush_group = QGroupBox()
+        self._reg(brush_group, "matting_brush_group", kind="title")
+        brush_form = QFormLayout()
+        brush_form.setContentsMargins(5, 5, 5, 5)
+
+        self.slider_brush_size = QSlider(Qt.Orientation.Horizontal)
+        self.slider_brush_size.setRange(2, 150)
+        self.slider_brush_size.setValue(30)
+        self.slider_brush_size.valueChanged.connect(lambda v: self.matting_canvas.set_brush_size(v))
+        brush_form.addRow(self._reg(QLabel(), "matting_brush_size_label"), self.slider_brush_size)
+
+        self.brush_mode_group = QButtonGroup(self)
+        radio_unknown = QRadioButton()
+        self._reg(radio_unknown, "matting_brush_unknown")
+        radio_unknown.setChecked(True)
+        radio_fg = QRadioButton()
+        self._reg(radio_fg, "matting_brush_fg")
+        radio_bg = QRadioButton()
+        self._reg(radio_bg, "matting_brush_bg")
+        for rb, mode in ((radio_unknown, MattingCanvas.BRUSH_UNKNOWN),
+                         (radio_fg, MattingCanvas.BRUSH_FG),
+                         (radio_bg, MattingCanvas.BRUSH_BG)):
+            self.brush_mode_group.addButton(rb)
+            rb.toggled.connect(lambda checked, m=mode: self.matting_canvas.set_brush_mode(m) if checked else None)
+            brush_form.addRow(rb)
+
+        brush_group.setLayout(brush_form)
+        left_layout.addWidget(brush_group)
+
+        # --- Undo/Redo/表示調整 ---
+        history_layout = QHBoxLayout()
+        self.btn_matting_undo = QPushButton()
+        self._reg(self.btn_matting_undo, "btn_undo")
+        self.btn_matting_undo.clicked.connect(lambda: self.matting_canvas.undo())
+        self.btn_matting_redo = QPushButton()
+        self._reg(self.btn_matting_redo, "btn_redo")
+        self.btn_matting_redo.clicked.connect(lambda: self.matting_canvas.redo())
+        history_layout.addWidget(self.btn_matting_undo)
+        history_layout.addWidget(self.btn_matting_redo)
+        left_layout.addLayout(history_layout)
+
+        self.btn_matting_fit = QPushButton()
+        self._reg(self.btn_matting_fit, "btn_fit_view")
+        self.btn_matting_fit.clicked.connect(lambda: self.matting_canvas.fit_to_window())
+        left_layout.addWidget(self.btn_matting_fit)
+
+        self.check_preview_alpha = QCheckBox()
+        self._reg(self.check_preview_alpha, "check_preview_alpha")
+        self.check_preview_alpha.stateChanged.connect(
+            lambda s: self.matting_canvas.set_preview_alpha(self.check_preview_alpha.isChecked())
+        )
+        left_layout.addWidget(self.check_preview_alpha)
+
+        self.btn_save_matting = QPushButton()
+        self._reg(self.btn_save_matting, "btn_save_matting")
+        self.btn_save_matting.setStyleSheet("font-weight: bold; background-color: #2b8a3e; color: white; padding: 6px;")
+        self.btn_save_matting.clicked.connect(self.save_matting_result)
+        left_layout.addWidget(self.btn_save_matting)
+
+        outer.addWidget(left)
+
+        # ---------------- 右: 編集キャンバス ----------------
+        self.matting_canvas = MattingCanvas()
+        self.matting_canvas.setProperty("empty_text", self.tr("matting_canvas_empty"))
+        self.matting_canvas.status_changed.connect(self._update_matting_history_buttons)
+        outer.addWidget(self.matting_canvas, stretch=1)
+
+        self._update_matting_history_buttons()
+
+        if hasattr(self, "matting_canvas") and hasattr(self, "slider_brush_size"):
+            self.matting_canvas.brush_size_changed.connect(self.slider_brush_size.setValue)
+        return tab
+
+    def refresh_matting_file_list(self):
+        self.matting_file_list.clear()
+        source = self.combo_matting_source.currentData()
+        if source == "upscale":
+            src_dir = self.edit_output_upscale.text().strip()
+        else:
+            src_dir = self.edit_output_rembg.text().strip()
+        if not src_dir or not os.path.isdir(src_dir):
+            return
+        files = sorted(f for f in os.listdir(src_dir)
+                        if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp")))
+        for f in files:
+            self.matting_file_list.addItem(os.path.join(src_dir, f))
+
+    def on_matting_file_selected(self, current, previous=None):
+        if current is None:
+            return
+        try:
+            img = Image.open(current.text())
+            self.matting_canvas.load_image(img)
+        except Exception as e:
+            self.append_log(self.tr("log_matting_recompute_failed", err=str(e)))
+        self._update_matting_history_buttons()
+
+    def _update_matting_history_buttons(self):
+        if not hasattr(self, "matting_canvas"):
+            return
+        self.btn_matting_undo.setEnabled(self.matting_canvas.can_undo())
+        self.btn_matting_redo.setEnabled(self.matting_canvas.can_redo())
+        err = self.matting_canvas.recompute_error
+        if err:
+            if err == "pymatting_missing":
+                msg = self.tr("matting_no_pymatting")
+            else:
+                msg = self.tr("log_matting_recompute_failed", err=err)
+            self._set_matting_status(msg, is_error=True)
+            self.append_log(msg)  # 共有ログにも残す(このタブでは非表示だが履歴としては保持)
+            self.matting_canvas.recompute_error = None
+
+    def _set_matting_status(self, text: str, is_error: bool = False):
+        if not hasattr(self, "label_matting_status"):
+            return
+        self.label_matting_status.setText(text)
+        self.label_matting_status.setStyleSheet(
+            "color: #e05050; font-size: 11px;" if is_error else "color: #6fbf6f; font-size: 11px;"
+        )
+
+    def save_matting_result(self):
+        if not self.matting_canvas.has_image():
+            QMessageBox.warning(self, self.tr("warning_title"), self.tr("msg_no_matting_image"))
+            return
+        current_item = self.matting_file_list.currentItem()
+        stem = Path(current_item.text()).stem if current_item else "matting_result"
+        out_dir = self.edit_output_matting.text().strip()
+        if not out_dir or not os.path.isdir(out_dir):
+            QMessageBox.warning(self, self.tr("warning_title"), self.tr("msg_no_output_dir"))
+            return
+        out_path = os.path.join(out_dir, f"{stem}_matte.png")
+        try:
+            result = self.matting_canvas.get_result_rgba()
+            result.save(out_path, "PNG")
+            msg = self.tr("log_matting_saved", name=os.path.basename(out_path))
+            self.append_log(msg)
+            self._set_matting_status(msg, is_error=False)
+        except Exception as e:
+            self._set_matting_status(str(e), is_error=True)
+            QMessageBox.warning(self, self.tr("error_title"), str(e))
 
     def on_batch_toggle(self, state):
         is_batch = self.check_use_batch.isChecked()
